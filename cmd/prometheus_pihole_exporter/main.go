@@ -69,7 +69,10 @@ func main() {
 		collectors.NewGoCollector(),
 	)
 
-	probeHandler := exporter.NewProbeHandler(cfg, logger)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	probeHandler := exporter.NewProbeHandler(ctx, cfg, logger)
 
 	mux := http.NewServeMux()
 	mux.Handle(*metricsPath, promhttp.HandlerFor(selfRegistry, promhttp.HandlerOpts{}))
@@ -97,9 +100,6 @@ func main() {
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	go func() {
 		logger.Info("server listening", "addr", *listenAddr, "metrics", *metricsPath, "probe", *probePath)
