@@ -119,9 +119,13 @@ func (h *probeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Wire enabled collectors. DNS defaults to on; explicit false in
 	// config disables it (e.g. for an instance scraped only for DHCP
-	// metrics). DHCP collectors land in follow-up PRs.
+	// metrics). DHCP collectors are off by default — they need a
+	// readable leases file / log path mounted into the exporter.
 	if inst.Collectors.DNS == nil || *inst.Collectors.DNS {
 		registry.MustRegister(newDNSCollector(target, client, logger))
+	}
+	if dl := inst.Collectors.DHCPLeases; dl != nil && dl.Path != "" {
+		registry.MustRegister(newDHCPLeasesCollector(target, dl.Path, logger))
 	}
 
 	promhttp.HandlerFor(registry, promhttp.HandlerOpts{}).ServeHTTP(w, r)
