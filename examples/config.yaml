@@ -1,0 +1,35 @@
+# prometheus_pihole_exporter — example configuration.
+#
+# Copy this file, edit the URLs, and set the env vars referenced by
+# `app_password_env` before launching the exporter:
+#
+#     export PIHOLE_PRIMARY_PASSWORD=...
+#     ./prometheus_pihole_exporter -config ./config.yaml
+#
+# Each top-level key under `instances` is the instance ID. That ID is
+# what Prometheus passes as `?target=<id>` when scraping /probe.
+
+instances:
+  primary:
+    url: "http://pihole.example.com"
+    app_password_env: PIHOLE_PRIMARY_PASSWORD
+    timeout: 10s
+    insecure_skip_verify: false
+    collectors:
+      dns: true
+      dhcp_leases:
+        path: /etc/pihole/dhcp.leases
+      dhcp_log:
+        path: /var/log/pihole/pihole.log
+
+  # Secondary Pi-hole instance. DNS-only; DHCP collectors are off because
+  # this Pi-hole isn't running DHCP today. Flip them on if it ever takes
+  # over for the primary.
+  secondary:
+    url: "http://pihole-secondary.example.com"
+    app_password_env: PIHOLE_SECONDARY_PASSWORD
+    timeout: 10s
+    collectors:
+      dns: true
+      # dhcp_leases: ...
+      # dhcp_log:    ...

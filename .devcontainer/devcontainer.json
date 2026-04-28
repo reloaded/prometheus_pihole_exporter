@@ -1,0 +1,67 @@
+// .devcontainer/devcontainer.json
+// Dev container for prometheus_pihole_exporter — Go module development.
+//
+// Tooling:
+//   - Go (matches the toolchain pinned in go.mod)
+//   - golangci-lint (matches the version pinned in CI)
+//   - gh CLI (for PR / release workflow)
+//   - Docker-in-Docker (so `make image` and the smoke run work in-container)
+//   - Claude Code (optional, for AI-assisted iteration)
+{
+  "name": "prometheus_pihole_exporter",
+  "image": "mcr.microsoft.com/devcontainers/base:noble",
+
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.23"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "moby": true
+    },
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
+  },
+
+  // Persist Claude Code conversations across rebuilds so iteration history
+  // isn't lost when the container is destroyed.
+  "mounts": [
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.claude/skills,target=/home/vscode/.claude/skills,type=bind,consistency=cached",
+    "source=claude-conversations-prometheus-pihole-exporter,target=/home/vscode/.claude/projects,type=volume"
+  ],
+
+  "postCreateCommand": "/bin/bash -lc \"$WORKSPACE_DIR/.devcontainer/postCreateCommand.sh\"",
+
+  "remoteEnv": {
+    "WORKSPACE_DIR": "/workspaces/prometheus_pihole_exporter",
+    "PATH": "${containerEnv:PATH}:/home/vscode/go/bin"
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "redhat.vscode-yaml",
+        "anthropic.claude-code"
+      ],
+      "settings": {
+        "go.useLanguageServer": true,
+        "go.lintTool": "golangci-lint",
+        "go.lintFlags": ["--fast-only"],
+        "go.formatTool": "gofumpt",
+        "[go]": {
+          "editor.formatOnSave": true,
+          "editor.codeActionsOnSave": {
+            "source.organizeImports": "explicit"
+          }
+        },
+        "yaml.schemas": {
+          "https://json.schemastore.org/golangci-lint.json": ".golangci.yml",
+          "https://json.schemastore.org/github-workflow.json": ".github/workflows/*.yml"
+        }
+      }
+    }
+  },
+
+  "remoteUser": "vscode",
+  "updateRemoteUserUID": true
+}

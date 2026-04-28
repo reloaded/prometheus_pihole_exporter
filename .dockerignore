@@ -1,0 +1,13 @@
+.git
+.github
+.claude
+.golangci.yml
+.editorconfig
+.gitignore
+.dockerignore
+docs
+testdata
+*_test.go
+*.md
+LICENSE
+Makefile

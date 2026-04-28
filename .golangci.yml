@@ -1,0 +1,47 @@
+# golangci-lint v2 config.
+# https://golangci-lint.run/usage/configuration/
+#
+# Conservative starter set; widen as the codebase grows.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - errcheck
+    - errorlint
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - revive
+    - staticcheck    # gosimple was folded into staticcheck in v2
+    - unused
+  settings:
+    gosec:
+      excludes:
+        # Matches handler usage at /probe etc. — http.ResponseWriter
+        # writes intentionally don't check the error.
+        - G104
+        # The config loader reads the operator-supplied -config path.
+        # The path is a CLI argument, not network input.
+        - G304
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+
+# In v2, gofmt and goimports are formatters (not linters).
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/reloaded/prometheus_pihole_exporter
