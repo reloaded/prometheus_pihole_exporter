@@ -1,0 +1,6 @@
+1730000000 aa:bb:cc:dd:ee:01 192.168.0.50 laptop-a 01:aa:bb:cc:dd:ee:01
+1730000000 aa:bb:cc:dd:ee:02 192.168.0.51 phone-b 01:aa:bb:cc:dd:ee:02
+1500000000 aa:bb:cc:dd:ee:03 192.168.0.52 expired-host 01:aa:bb:cc:dd:ee:03
+1730000000 abcd1234 fe80::1 ipv6-host 00:01:00:01:abcdef
+duid 00:01:00:01:server-duid-here
+1730000000 AA:BB:CC:DD:EE:04 192.168.0.53 * *
