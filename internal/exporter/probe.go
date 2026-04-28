@@ -6,32 +6,55 @@
 // gathered into a fresh registry, and the resulting metrics are written
 // out. This keeps instances isolated from each other and avoids global
 // metric churn when one instance is briefly unreachable.
-//
-// Collector implementations themselves are stubbed out at scaffold time
-// and will land in follow-up PRs (one per collector group).
 package exporter
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
+	"os"
+	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/reloaded/prometheus_pihole_exporter/internal/config"
+	"github.com/reloaded/prometheus_pihole_exporter/internal/pihole"
 )
 
+// pingTimeout caps the auth check the probe handler runs before
+// registering collectors. Independent of per-collector timeouts so a
+// single slow Pi-hole can't block /probe past this deadline.
+const pingTimeout = 10 * time.Second
+
 // NewProbeHandler builds the HTTP handler served at /probe.
+//
+// Each Pi-hole instance gets a single shared *pihole.Client (reused
+// across scrapes so the v6 session SID gets cached) and a freshly-built
+// registry per request.
 func NewProbeHandler(cfg *config.Config, logger *slog.Logger) http.Handler {
-	return &probeHandler{
-		cfg:    cfg,
-		logger: logger,
+	h := &probeHandler{
+		cfg:     cfg,
+		logger:  logger,
+		clients: make(map[string]*pihole.Client, len(cfg.Instances)),
 	}
+	for id, inst := range cfg.Instances {
+		h.clients[id] = pihole.NewClient(pihole.Options{
+			BaseURL:            inst.URL,
+			Password:           os.Getenv(inst.AppPasswordEnv),
+			Timeout:            inst.Timeout,
+			InsecureSkipVerify: inst.InsecureSkipVerify,
+		})
+	}
+	return h
 }
 
 type probeHandler struct {
-	cfg    *config.Config
-	logger *slog.Logger
+	cfg     *config.Config
+	logger  *slog.Logger
+	mu      sync.Mutex // guards clients
+	clients map[string]*pihole.Client
 }
 
 func (h *probeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -46,27 +69,67 @@ func (h *probeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown target", http.StatusNotFound)
 		return
 	}
+	h.mu.Lock()
+	client := h.clients[target]
+	h.mu.Unlock()
 
 	registry := prometheus.NewRegistry()
+	logger := h.logger.With("instance", target)
 
-	// Per-probe metric describing whether collection succeeded end-to-end.
-	// This stays in place even after real collectors land; alerts can key
-	// off it without caring which collector group failed.
+	// pihole_up tracks whether a baseline auth+ping succeeded — operators
+	// can alert on this single label without caring which collector group
+	// failed underneath. Per-collector health is exposed separately as
+	// `pihole_collector_up{collector=<group>}`.
 	up := prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "pihole_up",
-		Help: "1 if the Pi-hole instance was successfully scraped, 0 otherwise.",
+		Help: "1 if the Pi-hole instance was reachable and authenticated this scrape, 0 otherwise.",
 		ConstLabels: prometheus.Labels{
 			"instance": target,
 		},
 	})
 	registry.MustRegister(up)
 
-	// TODO(scaffold): wire collectors based on inst.Collectors. Until the
-	// real implementations land we just record up=0 with a debug log so
-	// the multi-target plumbing can be exercised end-to-end.
-	_ = inst
-	up.Set(0)
-	h.logger.Debug("probe (scaffold)", "target", target)
+	// Scrape-duration metric — useful for alerting on slow Pi-holes.
+	scrapeDuration := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "pihole_scrape_duration_seconds",
+		Help: "Wall-clock time spent gathering metrics for this Pi-hole instance.",
+		ConstLabels: prometheus.Labels{
+			"instance": target,
+		},
+	})
+	registry.MustRegister(scrapeDuration)
+
+	start := time.Now()
+	defer func() {
+		scrapeDuration.Set(time.Since(start).Seconds())
+	}()
+
+	// Verify the Pi-hole API is reachable + the app password still
+	// works before running the collectors. This sets pihole_up cleanly
+	// even when DNS / DHCP collectors aren't enabled.
+	pingCtx, cancel := pingCtxWithTimeout(r.Context(), pingTimeout)
+	defer cancel()
+	if err := client.Ping(pingCtx); err != nil {
+		logger.Warn("ping failed", "err", err)
+		up.Set(0)
+		promhttp.HandlerFor(registry, promhttp.HandlerOpts{}).ServeHTTP(w, r)
+		return
+	}
+	up.Set(1)
+
+	// Wire enabled collectors. DNS defaults to on; explicit false in
+	// config disables it (e.g. for an instance scraped only for DHCP
+	// metrics). DHCP collectors land in follow-up PRs.
+	if inst.Collectors.DNS == nil || *inst.Collectors.DNS {
+		registry.MustRegister(newDNSCollector(target, client, logger))
+	}
 
 	promhttp.HandlerFor(registry, promhttp.HandlerOpts{}).ServeHTTP(w, r)
+}
+
+// pingCtxWithTimeout is a thin wrapper so the probe handler can derive
+// a bounded ping context off the request's context. Pulled out so the
+// probe-handler tests can swap it out if needed.
+var pingCtxWithTimeout = func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, d)
 }
