@@ -128,7 +128,19 @@ func newDNSCollector(instance string, client *pihole.Client, logger *slog.Logger
 
 		info: d("pihole_info", "Pi-hole component versions reported by the API. Always 1; labels carry the strings.", "core_version", "ftl_version", "web_version"),
 
-		collectorUp: d("pihole_collector_up", "1 if a given collector group's scrape succeeded, 0 otherwise.", "collector"),
+		// Per-collector health gauge — `collector` is a CONST label
+		// here (not a variable label) so each collector's instance of
+		// this Desc has a different identity in Prometheus's registry.
+		// Otherwise three collectors declaring `pihole_collector_up`
+		// with identical const labels would all collide and crash
+		// MustRegister (Pi-hole v6 #issue surfaced when DNS + leases +
+		// log all run on the same systemd-mode host).
+		collectorUp: prometheus.NewDesc(
+			"pihole_collector_up",
+			"1 if a given collector group's scrape succeeded, 0 otherwise.",
+			nil,
+			prometheus.Labels{"instance": instance, "collector": "dns"},
+		),
 	}
 }
 
@@ -209,7 +221,7 @@ func (c *dnsCollector) Collect(ch chan<- prometheus.Metric) {
 	if allOK {
 		upVal = 1
 	}
-	ch <- prometheus.MustNewConstMetric(c.collectorUp, prometheus.GaugeValue, upVal, "dns")
+	ch <- prometheus.MustNewConstMetric(c.collectorUp, prometheus.GaugeValue, upVal)
 }
 
 func (c *dnsCollector) emitSummary(ch chan<- prometheus.Metric, s pihole.StatsSummary) {
