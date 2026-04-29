@@ -95,7 +95,7 @@ func (s *dhcpLogState) run(ctx context.Context) {
 			if err != nil {
 				return err
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 
 			st, err := f.Stat()
 			if err != nil {
