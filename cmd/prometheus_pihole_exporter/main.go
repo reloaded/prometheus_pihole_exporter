@@ -45,6 +45,7 @@ func main() {
 		probePath   = flag.String("web.probe-path", envOr("PIHOLE_EXPORTER_PROBE_PATH", "/probe"), "Path under which per-instance probe metrics are served.")
 		showVersion = flag.Bool("version", false, "Print version information and exit.")
 	)
+	resolveOverrides := config.RegisterOverrides(flag.CommandLine, os.Getenv)
 	flag.Parse()
 
 	if *showVersion {
@@ -55,12 +56,21 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
+	overrides, err := resolveOverrides()
+	if err != nil {
+		logger.Error("failed to resolve collector overrides", "err", err)
+		os.Exit(1)
+	}
+
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		logger.Error("failed to load config", "path", *configPath, "err", err)
 		os.Exit(1)
 	}
-	logger.Info("loaded config", "instances", len(cfg.Instances))
+	logger.Info("loaded config", "instances", len(cfg.Instances),
+		"override_dns", overrides.DNS != nil,
+		"override_dhcp_leases", overrides.DHCPLeases != nil,
+		"override_dhcp_log", overrides.DHCPLog != nil)
 
 	// Self-metrics registry: exporter process + Go runtime.
 	selfRegistry := prometheus.NewRegistry()
@@ -72,7 +82,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	probeHandler := exporter.NewProbeHandler(ctx, cfg, logger)
+	probeHandler := exporter.NewProbeHandler(ctx, cfg, overrides, logger)
 
 	mux := http.NewServeMux()
 	mux.Handle(*metricsPath, promhttp.HandlerFor(selfRegistry, promhttp.HandlerOpts{}))

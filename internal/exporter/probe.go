@@ -35,12 +35,19 @@ const pingTimeout = 10 * time.Second
 // registry per request. Instances that opt into the dhcp_log collector
 // also get a long-lived tailer goroutine started here; those goroutines
 // stop when ctx is cancelled (typically on SIGINT/SIGTERM in main).
-func NewProbeHandler(ctx context.Context, cfg *config.Config, logger *slog.Logger) http.Handler {
+//
+// `overrides` carries the global CLI/env collector toggles (issue #1).
+// Each effective toggle is computed at handler-build time so the
+// dhcp_log tailer goroutines can be skipped when the operator has
+// killed the collector at the process level — no point starting a
+// goroutine that's never going to register.
+func NewProbeHandler(ctx context.Context, cfg *config.Config, overrides config.Overrides, logger *slog.Logger) http.Handler {
 	h := &probeHandler{
-		cfg:     cfg,
-		logger:  logger,
-		clients: make(map[string]*pihole.Client, len(cfg.Instances)),
-		dhcpLog: make(map[string]*dhcpLogState, len(cfg.Instances)),
+		cfg:       cfg,
+		overrides: overrides,
+		logger:    logger,
+		clients:   make(map[string]*pihole.Client, len(cfg.Instances)),
+		dhcpLog:   make(map[string]*dhcpLogState, len(cfg.Instances)),
 	}
 	for id, inst := range cfg.Instances {
 		h.clients[id] = pihole.NewClient(pihole.Options{
@@ -49,8 +56,8 @@ func NewProbeHandler(ctx context.Context, cfg *config.Config, logger *slog.Logge
 			Timeout:            inst.Timeout,
 			InsecureSkipVerify: inst.InsecureSkipVerify,
 		})
-		if dl := inst.Collectors.DHCPLog; dl != nil && dl.Path != "" {
-			state := newDHCPLogState(id, dl.Path, logger)
+		if overrides.EffectiveDHCPLog(inst) {
+			state := newDHCPLogState(id, inst.Collectors.DHCPLog.Path, logger)
 			h.dhcpLog[id] = state
 			go state.run(ctx)
 		}
@@ -59,11 +66,12 @@ func NewProbeHandler(ctx context.Context, cfg *config.Config, logger *slog.Logge
 }
 
 type probeHandler struct {
-	cfg     *config.Config
-	logger  *slog.Logger
-	mu      sync.Mutex // guards clients + dhcpLog
-	clients map[string]*pihole.Client
-	dhcpLog map[string]*dhcpLogState
+	cfg       *config.Config
+	overrides config.Overrides
+	logger    *slog.Logger
+	mu        sync.Mutex // guards clients + dhcpLog
+	clients   map[string]*pihole.Client
+	dhcpLog   map[string]*dhcpLogState
 }
 
 func (h *probeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -126,15 +134,14 @@ func (h *probeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	up.Set(1)
 
-	// Wire enabled collectors. DNS defaults to on; explicit false in
-	// config disables it (e.g. for an instance scraped only for DHCP
-	// metrics). DHCP collectors are off by default — they need a
-	// readable leases file / log path mounted into the exporter.
-	if inst.Collectors.DNS == nil || *inst.Collectors.DNS {
+	// Wire enabled collectors. The override layer (CLI / env) gets
+	// the final say — see config.Overrides — so this entire chain
+	// reads from the resolved-effective view, not from the raw YAML.
+	if h.overrides.EffectiveDNS(inst) {
 		registry.MustRegister(newDNSCollector(target, client, logger))
 	}
-	if dl := inst.Collectors.DHCPLeases; dl != nil && dl.Path != "" {
-		registry.MustRegister(newDHCPLeasesCollector(target, dl.Path, logger))
+	if h.overrides.EffectiveDHCPLeases(inst) {
+		registry.MustRegister(newDHCPLeasesCollector(target, inst.Collectors.DHCPLeases.Path, logger))
 	}
 	if state := h.dhcpLog[target]; state != nil {
 		registry.MustRegister(newDHCPLogCollector(target, state))
