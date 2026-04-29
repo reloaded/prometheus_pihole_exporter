@@ -20,6 +20,13 @@ type dnsCollector struct {
 	client   *pihole.Client
 	logger   *slog.Logger
 
+	// counters holds the long-lived accumulators that turn Pi-hole's
+	// 24-hour rolling totals into monotonic Prometheus counters.
+	// Owned by probeHandler so the state persists across /probe
+	// requests; the collector borrows a pointer for the duration of
+	// one Collect() call. See windowed_counter.go.
+	counters *dnsCounters
+
 	// Top-line DNS counters / gauges
 	queriesTotal      *prometheus.Desc
 	queriesBlocked    *prometheus.Desc
@@ -76,7 +83,7 @@ type dnsCollector struct {
 	collectorUp *prometheus.Desc
 }
 
-func newDNSCollector(instance string, client *pihole.Client, logger *slog.Logger) prometheus.Collector {
+func newDNSCollector(instance string, client *pihole.Client, counters *dnsCounters, logger *slog.Logger) prometheus.Collector {
 	labels := prometheus.Labels{"instance": instance}
 	d := func(name, help string, varLabels ...string) *prometheus.Desc {
 		return prometheus.NewDesc(name, help, varLabels, labels)
@@ -84,15 +91,22 @@ func newDNSCollector(instance string, client *pihole.Client, logger *slog.Logger
 	return &dnsCollector{
 		instance: instance,
 		client:   client,
+		counters: counters,
 		logger:   logger,
 
-		queriesTotal:      d("pihole_dns_queries_total", "Pi-hole DNS queries handled today (resets at midnight, treat as a Counter)."),
-		queriesBlocked:    d("pihole_dns_queries_blocked_total", "Pi-hole DNS queries blocked today (resets at midnight)."),
-		queriesForwarded:  d("pihole_dns_queries_forwarded_total", "Pi-hole DNS queries forwarded to upstream resolvers today (resets at midnight)."),
-		queriesCached:     d("pihole_dns_queries_cached_total", "Pi-hole DNS queries answered from local cache today (resets at midnight)."),
-		queriesByType:     d("pihole_dns_queries_by_type_total", "Pi-hole DNS queries today, partitioned by record type (resets at midnight).", "type"),
-		queriesByStatus:   d("pihole_dns_queries_by_status_total", "Pi-hole DNS queries today, partitioned by FTL status (resets at midnight).", "status"),
-		queriesByReply:    d("pihole_dns_queries_by_reply_total", "Pi-hole DNS queries today, partitioned by reply category (resets at midnight).", "reply"),
+		// _total help strings reflect the *exporter-process-lifetime*
+		// semantics produced by the windowed→monotonic accumulators
+		// (see windowed_counter.go). Pi-hole's API itself reports
+		// 24-hour rolling totals; raw forwarding broke rate(), so the
+		// exporter now accumulates only the positive deltas across
+		// scrapes and exposes a true Prometheus counter.
+		queriesTotal:      d("pihole_dns_queries_total", "Pi-hole DNS queries handled, accumulated since exporter start."),
+		queriesBlocked:    d("pihole_dns_queries_blocked_total", "Pi-hole DNS queries blocked, accumulated since exporter start."),
+		queriesForwarded:  d("pihole_dns_queries_forwarded_total", "Pi-hole DNS queries forwarded to upstream resolvers, accumulated since exporter start."),
+		queriesCached:     d("pihole_dns_queries_cached_total", "Pi-hole DNS queries answered from local cache, accumulated since exporter start."),
+		queriesByType:     d("pihole_dns_queries_by_type_total", "Pi-hole DNS queries by record type, accumulated since exporter start.", "type"),
+		queriesByStatus:   d("pihole_dns_queries_by_status_total", "Pi-hole DNS queries by FTL status, accumulated since exporter start.", "status"),
+		queriesByReply:    d("pihole_dns_queries_by_reply_total", "Pi-hole DNS queries by reply category, accumulated since exporter start.", "reply"),
 		queriesUnique:     d("pihole_dns_queries_unique_domains", "Distinct domains queried today (gauge)."),
 		queriesFrequency:  d("pihole_dns_queries_per_second", "Pi-hole's reported short-window query rate (gauge)."),
 		queriesPctBlocked: d("pihole_dns_queries_blocked_ratio", "Fraction of today's queries that were blocked (0–1)."),
@@ -103,7 +117,7 @@ func newDNSCollector(instance string, client *pihole.Client, logger *slog.Logger
 		gravityDomains:      d("pihole_gravity_domains", "Number of domains in the gravity (blocklist) table."),
 		gravityLastUpdateTs: d("pihole_gravity_last_update_timestamp_seconds", "Unix timestamp of the last gravity database refresh."),
 
-		upstreamQueries:      d("pihole_dns_upstream_queries_total", "Today's queries forwarded to a given upstream destination (resets at midnight).", "upstream", "ip", "port"),
+		upstreamQueries:      d("pihole_dns_upstream_queries_total", "Queries forwarded to a given upstream destination, accumulated since exporter start.", "upstream", "ip", "port"),
 		upstreamResponseSecs: d("pihole_dns_upstream_response_seconds", "Mean response time from a given upstream destination (Pi-hole's reported value).", "upstream", "ip", "port"),
 		upstreamVarianceSecs: d("pihole_dns_upstream_response_variance_seconds", "Variance of response time from a given upstream destination (Pi-hole's reported value).", "upstream", "ip", "port"),
 
@@ -226,22 +240,28 @@ func (c *dnsCollector) Collect(ch chan<- prometheus.Metric) {
 
 func (c *dnsCollector) emitSummary(ch chan<- prometheus.Metric, s pihole.StatsSummary) {
 	q := s.Queries
-	ch <- prometheus.MustNewConstMetric(c.queriesTotal, prometheus.CounterValue, float64(q.Total))
-	ch <- prometheus.MustNewConstMetric(c.queriesBlocked, prometheus.CounterValue, float64(q.Blocked))
-	ch <- prometheus.MustNewConstMetric(c.queriesForwarded, prometheus.CounterValue, float64(q.Forwarded))
-	ch <- prometheus.MustNewConstMetric(c.queriesCached, prometheus.CounterValue, float64(q.Cached))
+	// All four scalar _total emissions wrap the upstream value with
+	// a windowed→monotonic accumulator (see windowed_counter.go).
+	// Pi-hole's API reports 24-hour rolling totals that drop at FTL
+	// flush boundaries; passing the raw value to Prometheus broke
+	// rate() with periodic spike artefacts.
+	ch <- prometheus.MustNewConstMetric(c.queriesTotal, prometheus.CounterValue, float64(c.counters.queriesTotal.observe(q.Total)))
+	ch <- prometheus.MustNewConstMetric(c.queriesBlocked, prometheus.CounterValue, float64(c.counters.queriesBlocked.observe(q.Blocked)))
+	ch <- prometheus.MustNewConstMetric(c.queriesForwarded, prometheus.CounterValue, float64(c.counters.queriesForwarded.observe(q.Forwarded)))
+	ch <- prometheus.MustNewConstMetric(c.queriesCached, prometheus.CounterValue, float64(c.counters.queriesCached.observe(q.Cached)))
 	ch <- prometheus.MustNewConstMetric(c.queriesUnique, prometheus.GaugeValue, float64(q.UniqueDomains))
 	ch <- prometheus.MustNewConstMetric(c.queriesFrequency, prometheus.GaugeValue, q.Frequency)
 	ch <- prometheus.MustNewConstMetric(c.queriesPctBlocked, prometheus.GaugeValue, q.PercentBlocked/100)
 
 	for k, v := range q.Types {
-		ch <- prometheus.MustNewConstMetric(c.queriesByType, prometheus.CounterValue, float64(v), strings.ToUpper(k))
+		t := strings.ToUpper(k)
+		ch <- prometheus.MustNewConstMetric(c.queriesByType, prometheus.CounterValue, float64(c.counters.queriesByType.observe(v, t)), t)
 	}
 	for k, v := range q.Status {
-		ch <- prometheus.MustNewConstMetric(c.queriesByStatus, prometheus.CounterValue, float64(v), k)
+		ch <- prometheus.MustNewConstMetric(c.queriesByStatus, prometheus.CounterValue, float64(c.counters.queriesByStatus.observe(v, k)), k)
 	}
 	for k, v := range q.Replies {
-		ch <- prometheus.MustNewConstMetric(c.queriesByReply, prometheus.CounterValue, float64(v), k)
+		ch <- prometheus.MustNewConstMetric(c.queriesByReply, prometheus.CounterValue, float64(c.counters.queriesByReply.observe(v, k)), k)
 	}
 
 	ch <- prometheus.MustNewConstMetric(c.clientsActive, prometheus.GaugeValue, float64(s.Clients.Active))
@@ -254,7 +274,10 @@ func (c *dnsCollector) emitSummary(ch chan<- prometheus.Metric, s pihole.StatsSu
 func (c *dnsCollector) emitUpstreams(ch chan<- prometheus.Metric, u pihole.StatsUpstreams) {
 	for _, up := range u.Upstreams {
 		port := upstreamPortLabel(up.Port)
-		ch <- prometheus.MustNewConstMetric(c.upstreamQueries, prometheus.CounterValue, float64(up.Count), up.Name, up.IP, port)
+		// upstreamQueries is windowed (per-upstream 24-hour total) →
+		// accumulate; the *_seconds gauges are instantaneous and pass
+		// through.
+		ch <- prometheus.MustNewConstMetric(c.upstreamQueries, prometheus.CounterValue, float64(c.counters.upstreamQueries.observe(up.Count, up.Name, up.IP, port)), up.Name, up.IP, port)
 		ch <- prometheus.MustNewConstMetric(c.upstreamResponseSecs, prometheus.GaugeValue, up.Statistics.Response, up.Name, up.IP, port)
 		ch <- prometheus.MustNewConstMetric(c.upstreamVarianceSecs, prometheus.GaugeValue, up.Statistics.Variance, up.Name, up.IP, port)
 	}

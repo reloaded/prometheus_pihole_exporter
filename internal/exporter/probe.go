@@ -43,11 +43,12 @@ const pingTimeout = 10 * time.Second
 // goroutine that's never going to register.
 func NewProbeHandler(ctx context.Context, cfg *config.Config, overrides config.Overrides, logger *slog.Logger) http.Handler {
 	h := &probeHandler{
-		cfg:       cfg,
-		overrides: overrides,
-		logger:    logger,
-		clients:   make(map[string]*pihole.Client, len(cfg.Instances)),
-		dhcpLog:   make(map[string]*dhcpLogState, len(cfg.Instances)),
+		cfg:         cfg,
+		overrides:   overrides,
+		logger:      logger,
+		clients:     make(map[string]*pihole.Client, len(cfg.Instances)),
+		dhcpLog:     make(map[string]*dhcpLogState, len(cfg.Instances)),
+		dnsCounters: make(map[string]*dnsCounters, len(cfg.Instances)),
 	}
 	for id, inst := range cfg.Instances {
 		h.clients[id] = pihole.NewClient(pihole.Options{
@@ -56,6 +57,10 @@ func NewProbeHandler(ctx context.Context, cfg *config.Config, overrides config.O
 			Timeout:            inst.Timeout,
 			InsecureSkipVerify: inst.InsecureSkipVerify,
 		})
+		// dnsCounters is allocated unconditionally — toggling the DNS
+		// collector on/off across reloads shouldn't reset the
+		// monotonic counters in the meantime.
+		h.dnsCounters[id] = newDNSCounters()
 		if overrides.EffectiveDHCPLog(inst) {
 			state := newDHCPLogState(id, inst.Collectors.DHCPLog.Path, logger)
 			h.dhcpLog[id] = state
@@ -72,6 +77,12 @@ type probeHandler struct {
 	mu        sync.Mutex // guards clients + dhcpLog
 	clients   map[string]*pihole.Client
 	dhcpLog   map[string]*dhcpLogState
+
+	// dnsCounters holds the long-lived windowed→monotonic
+	// accumulators for each Pi-hole instance's DNS collector.
+	// Survives across /probe requests so we don't re-prime the
+	// baseline at every scrape.
+	dnsCounters map[string]*dnsCounters
 }
 
 func (h *probeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +149,7 @@ func (h *probeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// the final say — see config.Overrides — so this entire chain
 	// reads from the resolved-effective view, not from the raw YAML.
 	if h.overrides.EffectiveDNS(inst) {
-		registry.MustRegister(newDNSCollector(target, client, logger))
+		registry.MustRegister(newDNSCollector(target, client, h.dnsCounters[target], logger))
 	}
 	if h.overrides.EffectiveDHCPLeases(inst) {
 		registry.MustRegister(newDHCPLeasesCollector(target, inst.Collectors.DHCPLeases.Path, logger))

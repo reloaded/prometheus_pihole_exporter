@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -18,9 +19,14 @@ import (
 
 // fakePihole is a minimal in-memory Pi-hole that can be steered per-test
 // via responses keyed on path. It handles the v6 auth handshake out of
-// the box.
+// the box. The mutex makes mid-test response swaps safe — the
+// windowed-counter tests need to drive the same collector through
+// multiple Gather() rounds with different upstream values to verify
+// delta accumulation.
 type fakePihole struct {
-	t         *testing.T
+	t *testing.T
+
+	mu        sync.RWMutex
 	responses map[string]string // path → JSON body
 	status    map[string]int    // optional override (defaults to 200)
 }
@@ -33,17 +39,28 @@ func (f *fakePihole) handler() http.Handler {
 			_, _ = w.Write([]byte(`{"session":{"valid":true,"sid":"S","validity":1800}}`))
 			return
 		}
+		f.mu.RLock()
 		body, ok := f.responses[r.URL.Path]
+		code := f.status[r.URL.Path]
+		f.mu.RUnlock()
 		if !ok {
 			http.NotFound(w, r)
 			return
 		}
-		if code := f.status[r.URL.Path]; code != 0 {
+		if code != 0 {
 			w.WriteHeader(code)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(body))
 	})
+}
+
+// setResponse swaps the fake server's body for a given path. Used to
+// replay multi-scrape traces in the windowed-counter test.
+func (f *fakePihole) setResponse(path, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.responses[path] = body
 }
 
 // gatherText returns the rendered text-format metrics for the given
@@ -119,15 +136,27 @@ func TestDNSCollector_Summary(t *testing.T) {
 
 	c := newDNSCollector("primary",
 		pihole.NewClient(pihole.Options{BaseURL: srv.URL, Password: "x"}),
+		newDNSCounters(),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 
+	// First Gather primes the windowed→monotonic accumulators — every
+	// _total wrapped by the accumulator reads back as 0. The gauges
+	// and the FTL-lifetime _total counters (dnsmasq_*, ftl_dhcp_*)
+	// pass through unchanged on the first scrape.
 	got := gatherText(t, c)
 
 	for _, want := range []string{
-		`pihole_dns_queries_total{instance="primary"} 1000`,
-		`pihole_dns_queries_blocked_total{instance="primary"} 100`,
-		`pihole_dns_queries_forwarded_total{instance="primary"} 600`,
-		`pihole_dns_queries_cached_total{instance="primary"} 300`,
+		// Windowed → primed to 0 on first scrape.
+		`pihole_dns_queries_total{instance="primary"} 0`,
+		`pihole_dns_queries_blocked_total{instance="primary"} 0`,
+		`pihole_dns_queries_forwarded_total{instance="primary"} 0`,
+		`pihole_dns_queries_cached_total{instance="primary"} 0`,
+		`pihole_dns_queries_by_type_total{instance="primary",type="A"} 0`,
+		`pihole_dns_queries_by_type_total{instance="primary",type="AAAA"} 0`,
+		`pihole_dns_queries_by_status_total{instance="primary",status="GRAVITY"} 0`,
+		`pihole_dns_queries_by_reply_total{instance="primary",reply="NXDOMAIN"} 0`,
+		`pihole_dns_upstream_queries_total{instance="primary",ip="9.9.9.9",port="53",upstream="9.9.9.9#53"} 0`,
+		// Gauges and FTL-lifetime counters pass through.
 		`pihole_dns_queries_blocked_ratio{instance="primary"} 0.1`,
 		`pihole_dns_queries_unique_domains{instance="primary"} 250`,
 		`pihole_dns_queries_per_second{instance="primary"} 3.5`,
@@ -136,11 +165,6 @@ func TestDNSCollector_Summary(t *testing.T) {
 		`pihole_gravity_domains{instance="primary"} 250000`,
 		`pihole_gravity_last_update_timestamp_seconds{instance="primary"} 1.7e+09`,
 		`pihole_blocking_enabled{instance="primary"} 1`,
-		`pihole_dns_queries_by_type_total{instance="primary",type="A"} 700`,
-		`pihole_dns_queries_by_type_total{instance="primary",type="AAAA"} 200`,
-		`pihole_dns_queries_by_status_total{instance="primary",status="GRAVITY"} 100`,
-		`pihole_dns_queries_by_reply_total{instance="primary",reply="NXDOMAIN"} 5`,
-		`pihole_dns_upstream_queries_total{instance="primary",ip="9.9.9.9",port="53",upstream="9.9.9.9#53"} 600`,
 		`pihole_dns_upstream_response_seconds{instance="primary",ip="9.9.9.9",port="53",upstream="9.9.9.9#53"} 0.05`,
 		`pihole_ftl_memory_percent{instance="primary"} 1.5`,
 		`pihole_ftl_cpu_percent{instance="primary"} 0.7`,
@@ -181,6 +205,7 @@ func TestDNSCollector_BlockingDisabled(t *testing.T) {
 
 	c := newDNSCollector("primary",
 		pihole.NewClient(pihole.Options{BaseURL: srv.URL, Password: "x"}),
+		newDNSCounters(),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	got := gatherText(t, c)
@@ -209,15 +234,152 @@ func TestDNSCollector_PartialFailure(t *testing.T) {
 
 	c := newDNSCollector("primary",
 		pihole.NewClient(pihole.Options{BaseURL: srv.URL, Password: "x"}),
+		newDNSCounters(),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	got := gatherText(t, c)
 	// Summary succeeded, upstreams failed → collector_up should be 0,
-	// but the summary metrics should still have been emitted.
+	// but the summary metrics should still have been emitted (here
+	// reading 0 because this is the first scrape and the accumulator
+	// is priming the baseline).
 	if !strings.Contains(got, `pihole_collector_up{collector="dns",instance="primary"} 0`) {
 		t.Fatalf("expected collector_up=0 when an endpoint fails, got:\n%s", got)
 	}
-	if !strings.Contains(got, `pihole_dns_queries_total{instance="primary"} 1`) {
-		t.Fatalf("expected partial summary metrics, got:\n%s", got)
+	if !strings.Contains(got, `pihole_dns_queries_total{instance="primary"} 0`) {
+		t.Fatalf("expected partial summary metrics (primed to 0 on first scrape), got:\n%s", got)
+	}
+}
+
+// TestDNSCollector_WindowedCountersAcrossScrapes drives the same
+// collector through four Gather() rounds against a fakePihole that
+// replays a realistic Pi-hole trace: prime, growth, window flush,
+// post-flush growth. Verifies that the windowed→monotonic wiring in
+// emitSummary / emitUpstreams produces values rate() can consume
+// without spike artefacts.
+func TestDNSCollector_WindowedCountersAcrossScrapes(t *testing.T) {
+	t.Parallel()
+
+	mkSummary := func(total, blocked, forwarded, cached int64, byType map[string]int64) string {
+		s := pihole.StatsSummary{}
+		s.Queries.Total = total
+		s.Queries.Blocked = blocked
+		s.Queries.Forwarded = forwarded
+		s.Queries.Cached = cached
+		s.Queries.Types = byType
+		b, _ := json.Marshal(s)
+		return string(b)
+	}
+	mkUpstreams := func(count int64) string {
+		u := pihole.StatsUpstreams{}
+		u.Upstreams = append(u.Upstreams, struct {
+			IP         string `json:"ip"`
+			Name       string `json:"name"`
+			Port       int    `json:"port"`
+			Count      int64  `json:"count"`
+			Statistics struct {
+				Response float64 `json:"response"`
+				Variance float64 `json:"variance"`
+			} `json:"statistics"`
+		}{IP: "9.9.9.9", Name: "9.9.9.9#53", Port: 53, Count: count})
+		b, _ := json.Marshal(u)
+		return string(b)
+	}
+
+	fp := &fakePihole{
+		t: t,
+		responses: map[string]string{
+			"/api/stats/summary":   mkSummary(1000, 100, 600, 300, map[string]int64{"A": 700}),
+			"/api/stats/upstreams": mkUpstreams(600),
+			"/api/dns/blocking":    `{"blocking":"enabled","timer":null}`,
+			"/api/info/ftl":        `{"ftl":{}}`,
+			"/api/info/version":    `{"version":{}}`,
+		},
+	}
+	srv := httptest.NewServer(fp.handler())
+	defer srv.Close()
+
+	c := newDNSCollector("primary",
+		pihole.NewClient(pihole.Options{BaseURL: srv.URL, Password: "x"}),
+		newDNSCounters(),
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	register := prometheus.NewRegistry()
+	register.MustRegister(c)
+	gather := func() string {
+		t.Helper()
+		mfs, err := register.Gather()
+		if err != nil {
+			t.Fatalf("Gather: %v", err)
+		}
+		var buf bytes.Buffer
+		enc := expfmt.NewEncoder(&buf, expfmt.NewFormat(expfmt.TypeTextPlain))
+		for _, mf := range mfs {
+			if err := enc.Encode(mf); err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+		}
+		return buf.String()
+	}
+
+	// Round 1 — prime. Every windowed _total reads 0.
+	got := gather()
+	for _, want := range []string{
+		`pihole_dns_queries_total{instance="primary"} 0`,
+		`pihole_dns_queries_blocked_total{instance="primary"} 0`,
+		`pihole_dns_queries_by_type_total{instance="primary",type="A"} 0`,
+		`pihole_dns_upstream_queries_total{instance="primary",ip="9.9.9.9",port="53",upstream="9.9.9.9#53"} 0`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("round 1 (prime): missing %q in:\n%s", want, got)
+		}
+	}
+
+	// Round 2 — growth. q.Total: 1000 → 1500 → expected lifetime 500;
+	// upstream.Count: 600 → 850 → expected lifetime 250.
+	fp.setResponse("/api/stats/summary", mkSummary(1500, 150, 850, 500, map[string]int64{"A": 1050}))
+	fp.setResponse("/api/stats/upstreams", mkUpstreams(850))
+	got = gather()
+	for _, want := range []string{
+		`pihole_dns_queries_total{instance="primary"} 500`,
+		`pihole_dns_queries_blocked_total{instance="primary"} 50`,
+		`pihole_dns_queries_by_type_total{instance="primary",type="A"} 350`,
+		`pihole_dns_upstream_queries_total{instance="primary",ip="9.9.9.9",port="53",upstream="9.9.9.9#53"} 250`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("round 2 (growth): missing %q in:\n%s", want, got)
+		}
+	}
+
+	// Round 3 — window flush. Upstream values drop; lifetime must
+	// not roll backwards. This is the spike-producing scenario the
+	// accumulator exists to defuse.
+	fp.setResponse("/api/stats/summary", mkSummary(1380, 140, 780, 460, map[string]int64{"A": 950}))
+	fp.setResponse("/api/stats/upstreams", mkUpstreams(780))
+	got = gather()
+	for _, want := range []string{
+		`pihole_dns_queries_total{instance="primary"} 500`,
+		`pihole_dns_queries_blocked_total{instance="primary"} 50`,
+		`pihole_dns_queries_by_type_total{instance="primary",type="A"} 350`,
+		`pihole_dns_upstream_queries_total{instance="primary",ip="9.9.9.9",port="53",upstream="9.9.9.9#53"} 250`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("round 3 (flush): missing %q in:\n%s", want, got)
+		}
+	}
+
+	// Round 4 — post-flush growth. New floor is 1380; rising to
+	// 1480 adds 100 to lifetime → 600 total. Same shape per series.
+	fp.setResponse("/api/stats/summary", mkSummary(1480, 145, 850, 485, map[string]int64{"A": 1010}))
+	fp.setResponse("/api/stats/upstreams", mkUpstreams(850))
+	got = gather()
+	for _, want := range []string{
+		`pihole_dns_queries_total{instance="primary"} 600`,
+		`pihole_dns_queries_blocked_total{instance="primary"} 55`,
+		`pihole_dns_queries_by_type_total{instance="primary",type="A"} 410`,
+		`pihole_dns_upstream_queries_total{instance="primary",ip="9.9.9.9",port="53",upstream="9.9.9.9#53"} 320`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("round 4 (post-flush growth): missing %q in:\n%s", want, got)
+		}
 	}
 }
