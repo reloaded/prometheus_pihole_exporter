@@ -92,17 +92,25 @@ func orUnknown(s string) string {
 // InfoFTL mirrors GET /api/info/ftl. Only the fields the exporter maps
 // to metrics today are decoded; unknown fields are dropped by
 // json.Unmarshal so adding more is purely additive.
+//
+// Schema notes for Pi-hole v6 (verified against pihole-FTL):
+//
+//   - `database.domains.{allowed,denied}` and
+//     `database.regex.{allowed,denied}` are `{total, enabled}` objects,
+//     not scalars. Earlier exporter releases mis-typed these as int64
+//     and the whole InfoFTL decode failed (taking the dnsmasq counters
+//     down with it).
+//   - The dnsmasq "unanswered" counter is `dns_unanswered`, not
+//     `dns_unanswered_queries`.
 type InfoFTL struct {
 	FTL struct {
 		Database struct {
-			Gravity int64 `json:"gravity"`
-			Groups  int64 `json:"groups"`
-			Lists   int64 `json:"lists"`
-			Clients int64 `json:"clients"`
-			Domains struct {
-				Allowed int64 `json:"allowed"`
-				Denied  int64 `json:"denied"`
-			} `json:"domains"`
+			Gravity int64            `json:"gravity"`
+			Groups  int64            `json:"groups"`
+			Lists   int64            `json:"lists"`
+			Clients int64            `json:"clients"`
+			Domains FTLListBreakdown `json:"domains"`
+			Regex   FTLListBreakdown `json:"regex"`
 		} `json:"database"`
 		PrivacyLevel int `json:"privacy_level"`
 		Clients      struct {
@@ -112,17 +120,25 @@ type InfoFTL struct {
 		MemPercent float64 `json:"%mem"`
 		CPUPercent float64 `json:"%cpu"`
 		DNSMasq    struct {
-			DNSCacheInserted     int64 `json:"dns_cache_inserted"`
-			DNSCacheLiveFreed    int64 `json:"dns_cache_live_freed"`
-			DNSQueriesForwarded  int64 `json:"dns_queries_forwarded"`
-			DNSAuthAnswered      int64 `json:"dns_auth_answered"`
-			DNSLocalAnswered     int64 `json:"dns_local_answered"`
-			DNSStaleAnswered     int64 `json:"dns_stale_answered"`
-			DNSUnansweredQueries int64 `json:"dns_unanswered_queries"`
+			DNSCacheInserted    int64 `json:"dns_cache_inserted"`
+			DNSCacheLiveFreed   int64 `json:"dns_cache_live_freed"`
+			DNSQueriesForwarded int64 `json:"dns_queries_forwarded"`
+			DNSAuthAnswered     int64 `json:"dns_auth_answered"`
+			DNSLocalAnswered    int64 `json:"dns_local_answered"`
+			DNSStaleAnswered    int64 `json:"dns_stale_answered"`
+			DNSUnanswered       int64 `json:"dns_unanswered"`
 		} `json:"dnsmasq"`
 		Type string `json:"type"`
 	} `json:"ftl"`
 	Took float64 `json:"took"`
+}
+
+// FTLListBreakdown is the per-list `{total, enabled}` shape Pi-hole v6
+// uses for `database.{domains,regex}.{allowed,denied}` entries — total
+// rows defined and the subset that's currently active.
+type FTLListBreakdown struct {
+	Total   int64 `json:"total"`
+	Enabled int64 `json:"enabled"`
 }
 
 // DNSBlocking mirrors GET /api/dns/blocking. The string field is one

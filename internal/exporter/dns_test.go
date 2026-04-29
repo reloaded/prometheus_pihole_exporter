@@ -111,7 +111,7 @@ func TestDNSCollector_Summary(t *testing.T) {
 			"/api/stats/summary":   string(summaryJSON),
 			"/api/stats/upstreams": string(upstreamsJSON),
 			"/api/dns/blocking":    `{"blocking":"enabled","timer":null}`,
-			"/api/info/ftl":        `{"ftl":{"privacy_level":0,"%mem":1.5,"%cpu":0.7,"clients":{"total":50,"active":12},"dnsmasq":{"dns_cache_inserted":4242,"dns_cache_live_freed":11,"dns_queries_forwarded":600,"dns_auth_answered":12,"dns_local_answered":300,"dns_stale_answered":5,"dns_unanswered_queries":2}}}`,
+			"/api/info/ftl":        `{"ftl":{"privacy_level":0,"%mem":1.5,"%cpu":0.7,"clients":{"total":50,"active":12},"database":{"domains":{"allowed":{"total":3,"enabled":3},"denied":{"total":0,"enabled":0}},"regex":{"allowed":{"total":0,"enabled":0},"denied":{"total":0,"enabled":0}}},"dnsmasq":{"dns_cache_inserted":4242,"dns_cache_live_freed":11,"dns_queries_forwarded":600,"dns_auth_answered":12,"dns_local_answered":300,"dns_stale_answered":5,"dns_unanswered":2}}}`,
 			"/api/info/version":    `{"version":{"core":{"local":{"version":"v6.0.0"}},"ftl":{"local":{"version":"v6.0.1"}},"web":{"local":{"version":"v6.0.0"}}}}`,
 		},
 	}).handler())
