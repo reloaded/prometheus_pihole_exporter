@@ -16,10 +16,15 @@ if [ -f "$WORKSPACE_DIR/go.mod" ]; then
   ( cd "$WORKSPACE_DIR" && go mod download )
 fi
 
-# 3) Install golangci-lint at the version CI runs against. Pinning so a
-#    runtime-fresh devcontainer matches the linter behaviour reviewers see
-#    on the PR.
-GOLANGCI_VERSION="${GOLANGCI_VERSION:-v2.3.0}"
+# 3) Install golangci-lint at the version CI runs against. The version
+#    lives in .golangci-lint-version (single source of truth shared
+#    with the Makefile and the CI workflow) so a runtime-fresh
+#    devcontainer matches the linter behaviour reviewers see on the PR.
+if [ -f "$WORKSPACE_DIR/.golangci-lint-version" ]; then
+  GOLANGCI_VERSION="$(cat "$WORKSPACE_DIR/.golangci-lint-version")"
+else
+  GOLANGCI_VERSION="${GOLANGCI_VERSION:-v2.3.0}"
+fi
 GOPATH_BIN="$(go env GOPATH 2>/dev/null)/bin"
 mkdir -p "$GOPATH_BIN"
 if ! "$GOPATH_BIN/golangci-lint" version --short 2>/dev/null | grep -q "${GOLANGCI_VERSION#v}"; then
