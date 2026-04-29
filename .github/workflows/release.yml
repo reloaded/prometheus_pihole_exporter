@@ -85,8 +85,35 @@ jobs:
           provenance: true
           sbom: true
 
+      # Build raw, statically-linked binaries for direct/baremetal
+      # consumers (e.g. an Ansible role installing a systemd unit on
+      # an ARM SBC that can't run docker). The same -trimpath /
+      # -ldflags shape used by `make build`, applied per-arch.
+      - name: Build standalone binaries (linux/amd64 + linux/arm64)
+        env:
+          VERSION: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+          DATE: ${{ github.event.head_commit.timestamp }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            out="dist/prometheus_pihole_exporter-${VERSION}-linux-${arch}"
+            CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" \
+              go build -trimpath \
+                -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
+                -o "${out}" ./cmd/prometheus_pihole_exporter
+            ( cd dist && sha256sum "$(basename "${out}")" > "$(basename "${out}").sha256" )
+          done
+          ls -la dist/
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           prerelease: ${{ steps.flavour.outputs.prerelease == 'true' }}
+          files: |
+            dist/prometheus_pihole_exporter-*-linux-amd64
+            dist/prometheus_pihole_exporter-*-linux-amd64.sha256
+            dist/prometheus_pihole_exporter-*-linux-arm64
+            dist/prometheus_pihole_exporter-*-linux-arm64.sha256

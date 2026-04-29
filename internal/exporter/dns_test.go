@@ -111,7 +111,7 @@ func TestDNSCollector_Summary(t *testing.T) {
 			"/api/stats/summary":   string(summaryJSON),
 			"/api/stats/upstreams": string(upstreamsJSON),
 			"/api/dns/blocking":    `{"blocking":"enabled","timer":null}`,
-			"/api/info/ftl":        `{"ftl":{"privacy_level":0,"%mem":1.5,"%cpu":0.7,"clients":{"total":50,"active":12},"database":{"domains":{"allowed":{"total":3,"enabled":3},"denied":{"total":0,"enabled":0}},"regex":{"allowed":{"total":0,"enabled":0},"denied":{"total":0,"enabled":0}}},"dnsmasq":{"dns_cache_inserted":4242,"dns_cache_live_freed":11,"dns_queries_forwarded":600,"dns_auth_answered":12,"dns_local_answered":300,"dns_stale_answered":5,"dns_unanswered":2}}}`,
+			"/api/info/ftl":        `{"ftl":{"privacy_level":0,"%mem":1.5,"%cpu":0.7,"clients":{"total":50,"active":12},"database":{"domains":{"allowed":{"total":3,"enabled":3},"denied":{"total":0,"enabled":0}},"regex":{"allowed":{"total":0,"enabled":0},"denied":{"total":0,"enabled":0}}},"dnsmasq":{"dns_cache_inserted":4242,"dns_cache_live_freed":11,"dns_queries_forwarded":600,"dns_auth_answered":12,"dns_local_answered":300,"dns_stale_answered":5,"dns_unanswered":2,"dhcp_ack":17,"dhcp_decline":0,"dhcp_discover":4,"dhcp_inform":0,"dhcp_nak":0,"dhcp_offer":4,"dhcp_release":2,"dhcp_request":17,"leases_allocated_4":22,"leases_pruned_4":3,"leases_allocated_6":1,"leases_pruned_6":0}}}`,
 			"/api/info/version":    `{"version":{"core":{"local":{"version":"v6.0.0"}},"ftl":{"local":{"version":"v6.0.1"}},"web":{"local":{"version":"v6.0.0"}}}}`,
 		},
 	}).handler())
@@ -146,6 +146,15 @@ func TestDNSCollector_Summary(t *testing.T) {
 		`pihole_ftl_cpu_percent{instance="primary"} 0.7`,
 		`pihole_dnsmasq_cache_inserted_total{instance="primary"} 4242`,
 		`pihole_dnsmasq_queries_forwarded_total{instance="primary"} 600`,
+		// FTL-API-sourced DHCP counters (no log-tailer needed)
+		`pihole_ftl_dhcp_messages_total{instance="primary",type="DHCPACK"} 17`,
+		`pihole_ftl_dhcp_messages_total{instance="primary",type="DHCPNAK"} 0`,
+		`pihole_ftl_dhcp_messages_total{instance="primary",type="DHCPOFFER"} 4`,
+		`pihole_ftl_dhcp_messages_total{instance="primary",type="DHCPREQUEST"} 17`,
+		`pihole_ftl_dhcp_messages_total{instance="primary",type="DHCPRELEASE"} 2`,
+		`pihole_ftl_dhcp_leases_allocated_total{family="ipv4",instance="primary"} 22`,
+		`pihole_ftl_dhcp_leases_pruned_total{family="ipv4",instance="primary"} 3`,
+		`pihole_ftl_dhcp_leases_allocated_total{family="ipv6",instance="primary"} 1`,
 		`pihole_info{core_version="v6.0.0",ftl_version="v6.0.1",instance="primary",web_version="v6.0.0"} 1`,
 		`pihole_collector_up{collector="dns",instance="primary"} 1`,
 	} {

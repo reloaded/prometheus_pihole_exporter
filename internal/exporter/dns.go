@@ -62,6 +62,13 @@ type dnsCollector struct {
 	dnsmasqStale      *prometheus.Desc
 	dnsmasqUnanswered *prometheus.Desc
 
+	// FTL-API-sourced DHCP counters. Coexist with the dhcp_log
+	// collector's `pihole_dhcp_messages_total` (different metric
+	// names so both can run when an operator wants both signals).
+	ftlDHCPMessages        *prometheus.Desc
+	ftlDHCPLeasesAllocated *prometheus.Desc
+	ftlDHCPLeasesPruned    *prometheus.Desc
+
 	// Info gauge (constant 1, labels carry version strings)
 	info *prometheus.Desc
 
@@ -115,6 +122,10 @@ func newDNSCollector(instance string, client *pihole.Client, logger *slog.Logger
 		dnsmasqStale:      d("pihole_dnsmasq_queries_stale_answered_total", "dnsmasq queries answered from stale cache since FTL start."),
 		dnsmasqUnanswered: d("pihole_dnsmasq_queries_unanswered_total", "dnsmasq queries left unanswered since FTL start."),
 
+		ftlDHCPMessages:        d("pihole_ftl_dhcp_messages_total", "DHCP messages observed by Pi-hole's FTL since start, partitioned by message type. Source: /api/info/ftl. Coexists with the log-tailer's pihole_dhcp_messages_total — operators can enable either or both depending on data-source preference.", "type"),
+		ftlDHCPLeasesAllocated: d("pihole_ftl_dhcp_leases_allocated_total", "DHCP leases ever allocated by Pi-hole's FTL since start, partitioned by IP family.", "family"),
+		ftlDHCPLeasesPruned:    d("pihole_ftl_dhcp_leases_pruned_total", "DHCP leases pruned (expired, freed) since FTL start, partitioned by IP family. Currently-active leases approximate to allocated − pruned.", "family"),
+
 		info: d("pihole_info", "Pi-hole component versions reported by the API. Always 1; labels carry the strings.", "core_version", "ftl_version", "web_version"),
 
 		collectorUp: d("pihole_collector_up", "1 if a given collector group's scrape succeeded, 0 otherwise.", "collector"),
@@ -134,6 +145,7 @@ func (c *dnsCollector) Describe(ch chan<- *prometheus.Desc) {
 		c.ftlClientsActive, c.ftlClientsTotal,
 		c.dnsmasqCacheIns, c.dnsmasqCacheFreed, c.dnsmasqForwarded,
 		c.dnsmasqAuth, c.dnsmasqLocal, c.dnsmasqStale, c.dnsmasqUnanswered,
+		c.ftlDHCPMessages, c.ftlDHCPLeasesAllocated, c.ftlDHCPLeasesPruned,
 		c.info, c.collectorUp,
 	}
 	for _, d := range descs {
@@ -252,6 +264,27 @@ func (c *dnsCollector) emitFTL(ch chan<- prometheus.Metric, ftl pihole.InfoFTL) 
 	ch <- prometheus.MustNewConstMetric(c.dnsmasqLocal, prometheus.CounterValue, float64(d.DNSLocalAnswered))
 	ch <- prometheus.MustNewConstMetric(c.dnsmasqStale, prometheus.CounterValue, float64(d.DNSStaleAnswered))
 	ch <- prometheus.MustNewConstMetric(c.dnsmasqUnanswered, prometheus.CounterValue, float64(d.DNSUnanswered))
+
+	// Always-emit zero rows for the v4 DHCP message types so rate()
+	// queries don't need absent() guards. Mirrors the log-tailer's
+	// pattern.
+	dhcpByType := map[string]int64{
+		"DHCPACK":      d.DHCPAck,
+		"DHCPNAK":      d.DHCPNak,
+		"DHCPOFFER":    d.DHCPOffer,
+		"DHCPREQUEST":  d.DHCPRequest,
+		"DHCPDECLINE":  d.DHCPDecline,
+		"DHCPRELEASE":  d.DHCPRelease,
+		"DHCPDISCOVER": d.DHCPDiscover,
+		"DHCPINFORM":   d.DHCPInform,
+	}
+	for t, v := range dhcpByType {
+		ch <- prometheus.MustNewConstMetric(c.ftlDHCPMessages, prometheus.CounterValue, float64(v), t)
+	}
+	ch <- prometheus.MustNewConstMetric(c.ftlDHCPLeasesAllocated, prometheus.CounterValue, float64(d.LeasesAllocated4), "ipv4")
+	ch <- prometheus.MustNewConstMetric(c.ftlDHCPLeasesAllocated, prometheus.CounterValue, float64(d.LeasesAllocated6), "ipv6")
+	ch <- prometheus.MustNewConstMetric(c.ftlDHCPLeasesPruned, prometheus.CounterValue, float64(d.LeasesPruned4), "ipv4")
+	ch <- prometheus.MustNewConstMetric(c.ftlDHCPLeasesPruned, prometheus.CounterValue, float64(d.LeasesPruned6), "ipv6")
 }
 
 func upstreamPortLabel(p int) string {
