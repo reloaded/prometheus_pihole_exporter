@@ -111,7 +111,7 @@ func (c *Client) Logout(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	c.mu.Lock()
 	c.sid = ""
@@ -151,7 +151,7 @@ func (c *Client) attempt(ctx context.Context, method, path string, body io.Reade
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return errStaleSession
@@ -222,7 +222,7 @@ func (c *Client) refreshSession(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("auth: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return fmt.Errorf("auth: HTTP %d: %s", resp.StatusCode, bytes.TrimSpace(snippet))

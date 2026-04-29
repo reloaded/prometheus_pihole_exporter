@@ -41,10 +41,14 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: Resolve linter version
+        id: linter
+        run: echo "version=$(cat .golangci-lint-version)" >> "$GITHUB_OUTPUT"
+
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.3.0
+          version: ${{ steps.linter.outputs.version }}
 
       - name: go test
         run: go test -race -cover ./...

@@ -69,12 +69,18 @@ type versionLocal struct {
 	Hash    string `json:"hash"`
 }
 
-// CoreVersion / FTLVersion / WebVersion expose just the local version
-// strings, defaulting to "unknown" when Pi-hole hasn't populated the
-// component (e.g. during a partial upgrade).
+// CoreVersion returns the local version string for Pi-hole core,
+// defaulting to "unknown" when Pi-hole hasn't populated the field
+// (e.g. during a partial upgrade).
 func (v InfoVersion) CoreVersion() string { return orUnknown(v.Version.Core.Local.Version) }
-func (v InfoVersion) FTLVersion() string  { return orUnknown(v.Version.FTL.Local.Version) }
-func (v InfoVersion) WebVersion() string  { return orUnknown(v.Version.Web.Local.Version) }
+
+// FTLVersion returns the local FTL version string, with the same
+// "unknown" fallback as CoreVersion.
+func (v InfoVersion) FTLVersion() string { return orUnknown(v.Version.FTL.Local.Version) }
+
+// WebVersion returns the local web-admin version string, with the
+// same "unknown" fallback as CoreVersion.
+func (v InfoVersion) WebVersion() string { return orUnknown(v.Version.Web.Local.Version) }
 
 func orUnknown(s string) string {
 	if s == "" {

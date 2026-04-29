@@ -32,12 +32,15 @@ const pingTimeout = 10 * time.Second
 //
 // Each Pi-hole instance gets a single shared *pihole.Client (reused
 // across scrapes so the v6 session SID gets cached) and a freshly-built
-// registry per request.
-func NewProbeHandler(cfg *config.Config, logger *slog.Logger) http.Handler {
+// registry per request. Instances that opt into the dhcp_log collector
+// also get a long-lived tailer goroutine started here; those goroutines
+// stop when ctx is cancelled (typically on SIGINT/SIGTERM in main).
+func NewProbeHandler(ctx context.Context, cfg *config.Config, logger *slog.Logger) http.Handler {
 	h := &probeHandler{
 		cfg:     cfg,
 		logger:  logger,
 		clients: make(map[string]*pihole.Client, len(cfg.Instances)),
+		dhcpLog: make(map[string]*dhcpLogState, len(cfg.Instances)),
 	}
 	for id, inst := range cfg.Instances {
 		h.clients[id] = pihole.NewClient(pihole.Options{
@@ -46,6 +49,11 @@ func NewProbeHandler(cfg *config.Config, logger *slog.Logger) http.Handler {
 			Timeout:            inst.Timeout,
 			InsecureSkipVerify: inst.InsecureSkipVerify,
 		})
+		if dl := inst.Collectors.DHCPLog; dl != nil && dl.Path != "" {
+			state := newDHCPLogState(id, dl.Path, logger)
+			h.dhcpLog[id] = state
+			go state.run(ctx)
+		}
 	}
 	return h
 }
@@ -53,8 +61,9 @@ func NewProbeHandler(cfg *config.Config, logger *slog.Logger) http.Handler {
 type probeHandler struct {
 	cfg     *config.Config
 	logger  *slog.Logger
-	mu      sync.Mutex // guards clients
+	mu      sync.Mutex // guards clients + dhcpLog
 	clients map[string]*pihole.Client
+	dhcpLog map[string]*dhcpLogState
 }
 
 func (h *probeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -119,9 +128,16 @@ func (h *probeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Wire enabled collectors. DNS defaults to on; explicit false in
 	// config disables it (e.g. for an instance scraped only for DHCP
-	// metrics). DHCP collectors land in follow-up PRs.
+	// metrics). DHCP collectors are off by default — they need a
+	// readable leases file / log path mounted into the exporter.
 	if inst.Collectors.DNS == nil || *inst.Collectors.DNS {
 		registry.MustRegister(newDNSCollector(target, client, logger))
+	}
+	if dl := inst.Collectors.DHCPLeases; dl != nil && dl.Path != "" {
+		registry.MustRegister(newDHCPLeasesCollector(target, dl.Path, logger))
+	}
+	if state := h.dhcpLog[target]; state != nil {
+		registry.MustRegister(newDHCPLogCollector(target, state))
 	}
 
 	promhttp.HandlerFor(registry, promhttp.HandlerOpts{}).ServeHTTP(w, r)

@@ -38,6 +38,7 @@ Prometheus exporter for Pi-hole v6. Exposes DNS, blocking, and DHCP metrics from
 - `gofmt -s` (strict)
 - `golangci-lint` with the linters in `.golangci.yml` — additions require a PR-level discussion
 - No `nolint` comments without a one-line explanation
+- **Use `make lint` — never bare `golangci-lint`.** The Makefile reads the pinned version from `.golangci-lint-version` and runs the project-local binary at `./bin/golangci-lint-<version>`. The same file feeds the CI workflow and the devcontainer's `postCreateCommand.sh` so the three never drift. Bumping the version is a single-file edit.
 
 ## Git workflow
 
