@@ -127,6 +127,29 @@ type InfoFTL struct {
 			DNSLocalAnswered    int64 `json:"dns_local_answered"`
 			DNSStaleAnswered    int64 `json:"dns_stale_answered"`
 			DNSUnanswered       int64 `json:"dns_unanswered"`
+
+			// DHCP message counters — Pi-hole v6 surfaces these in
+			// /api/info/ftl, eliminating the need for log-tailing on
+			// pure-DNS-on-DHCP setups. Field names match dnsmasq's
+			// internal counters; the exporter re-keys them as the
+			// canonical DHCPACK / DHCPNAK / etc. message-type strings
+			// when emitting metrics.
+			DHCPAck      int64 `json:"dhcp_ack"`
+			DHCPDecline  int64 `json:"dhcp_decline"`
+			DHCPDiscover int64 `json:"dhcp_discover"`
+			DHCPInform   int64 `json:"dhcp_inform"`
+			DHCPNak      int64 `json:"dhcp_nak"`
+			DHCPOffer    int64 `json:"dhcp_offer"`
+			DHCPRelease  int64 `json:"dhcp_release"`
+			DHCPRequest  int64 `json:"dhcp_request"`
+
+			// Lease lifecycle counters partitioned by IP family. v4 →
+			// IPv4 leases; v6 → IPv6 leases (DHCPv6). Currently-active
+			// lease count ≈ (allocated − pruned).
+			LeasesAllocated4 int64 `json:"leases_allocated_4"`
+			LeasesPruned4    int64 `json:"leases_pruned_4"`
+			LeasesAllocated6 int64 `json:"leases_allocated_6"`
+			LeasesPruned6    int64 `json:"leases_pruned_6"`
 		} `json:"dnsmasq"`
 		Type string `json:"type"`
 	} `json:"ftl"`
