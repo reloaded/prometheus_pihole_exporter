@@ -59,7 +59,17 @@ func newDHCPLeasesCollector(instance, path string, logger *slog.Logger) promethe
 		leasesTotal:   d("pihole_dhcp_leases_total", "All DHCP leases in the leases file (active + expired), partitioned by IP family.", familyLabel),
 		leaseInfo:     d("pihole_dhcp_lease_info", "Always 1; labels identify a specific DHCP lease.", macLabel, ipLabel, hostnameLabel, familyLabel),
 		leaseExpires:  d("pihole_dhcp_lease_expires_timestamp_seconds", "Unix timestamp at which a given DHCP lease expires.", macLabel, ipLabel, hostnameLabel, familyLabel),
-		collectorUp:   d("pihole_collector_up", "1 if a given collector group's scrape succeeded, 0 otherwise.", "collector"),
+		// `collector` is a CONST label so each collector's Desc is a
+		// distinct registry identity (otherwise N collectors all
+		// declaring pihole_collector_up{instance=…} would crash
+		// MustRegister with "already exists with the same fqName +
+		// const labels"). See dns.go for the same pattern.
+		collectorUp: prometheus.NewDesc(
+			"pihole_collector_up",
+			"1 if a given collector group's scrape succeeded, 0 otherwise.",
+			nil,
+			prometheus.Labels{"instance": instance, "collector": "dhcp_leases"},
+		),
 	}
 }
 
@@ -73,7 +83,7 @@ func (c *dhcpLeasesCollector) Collect(ch chan<- prometheus.Metric) {
 	leases, err := readLeases(c.path)
 	if err != nil {
 		c.logger.Warn("dhcp_leases: read failed", "instance", c.instance, "path", c.path, "err", err)
-		ch <- prometheus.MustNewConstMetric(c.collectorUp, prometheus.GaugeValue, 0, "dhcp_leases")
+		ch <- prometheus.MustNewConstMetric(c.collectorUp, prometheus.GaugeValue, 0)
 		return
 	}
 
@@ -104,7 +114,7 @@ func (c *dhcpLeasesCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.leasesTotal, prometheus.GaugeValue, float64(entry[2]), fam)
 	}
 
-	ch <- prometheus.MustNewConstMetric(c.collectorUp, prometheus.GaugeValue, 1, "dhcp_leases")
+	ch <- prometheus.MustNewConstMetric(c.collectorUp, prometheus.GaugeValue, 1)
 }
 
 // lease is one parsed entry from the leases file.

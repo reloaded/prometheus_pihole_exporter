@@ -184,7 +184,15 @@ func newDHCPLogCollector(instance string, state *dhcpLogState) prometheus.Collec
 		descMsgTotal:    d("pihole_dhcp_messages_total", "Number of DHCP messages observed in the dnsmasq log since the exporter started, partitioned by type.", "type"),
 		descParseErrors: d("pihole_dhcp_log_parse_errors_total", "Errors encountered while parsing the dnsmasq log."),
 		descLastEvent:   d("pihole_dhcp_log_last_event_timestamp_seconds", "Unix timestamp of the most recently observed DHCP event (0 if none yet)."),
-		descCollectorUp: d("pihole_collector_up", "1 if a given collector group's scrape succeeded, 0 otherwise.", "collector"),
+		// `collector` is a CONST label so each collector's Desc is a
+		// distinct registry identity. See dns.go / dhcp_leases.go for
+		// the same pattern.
+		descCollectorUp: prometheus.NewDesc(
+			"pihole_collector_up",
+			"1 if a given collector group's scrape succeeded, 0 otherwise.",
+			nil,
+			prometheus.Labels{"instance": instance, "collector": "dhcp_log"},
+		),
 	}
 }
 
@@ -220,5 +228,5 @@ func (c *dhcpLogCollector) Collect(ch chan<- prometheus.Metric) {
 	if healthy {
 		upVal = 1
 	}
-	ch <- prometheus.MustNewConstMetric(c.descCollectorUp, prometheus.GaugeValue, upVal, "dhcp_log")
+	ch <- prometheus.MustNewConstMetric(c.descCollectorUp, prometheus.GaugeValue, upVal)
 }
