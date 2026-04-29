@@ -251,7 +251,7 @@ func (c *dnsCollector) emitFTL(ch chan<- prometheus.Metric, ftl pihole.InfoFTL) 
 	ch <- prometheus.MustNewConstMetric(c.dnsmasqAuth, prometheus.CounterValue, float64(d.DNSAuthAnswered))
 	ch <- prometheus.MustNewConstMetric(c.dnsmasqLocal, prometheus.CounterValue, float64(d.DNSLocalAnswered))
 	ch <- prometheus.MustNewConstMetric(c.dnsmasqStale, prometheus.CounterValue, float64(d.DNSStaleAnswered))
-	ch <- prometheus.MustNewConstMetric(c.dnsmasqUnanswered, prometheus.CounterValue, float64(d.DNSUnansweredQueries))
+	ch <- prometheus.MustNewConstMetric(c.dnsmasqUnanswered, prometheus.CounterValue, float64(d.DNSUnanswered))
 }
 
 func upstreamPortLabel(p int) string {
