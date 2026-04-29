@@ -47,6 +47,22 @@ Configuration is YAML. See [`examples/config.yaml`](examples/config.yaml)
 for the full shape. App-passwords are not stored inline — each instance
 names an env var that the exporter reads at scrape time.
 
+### Collector overrides (CLI / env)
+
+Each Pi-hole instance enables collector groups via its `collectors:` block
+in YAML, but a deploy-time global override is also available so a collector
+can be flipped on or off across every instance without editing the config
+file. Useful when rolling a collector out gradually, or silencing one for
+an investigation.
+
+| Flag                     | Env                                       | Effect when set                                                                                                                                                      |
+| ------------------------ | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-collector.dns`         | `PIHOLE_EXPORTER_COLLECTOR_DNS`           | Force the DNS collector on (`true`) or off (`false`) for every instance.                                                                                             |
+| `-collector.dhcp-leases` | `PIHOLE_EXPORTER_COLLECTOR_DHCP_LEASES`   | Force the DHCP-leases collector on/off. Truthy values still require `collectors.dhcp_leases.path` per instance — the override doesn't synthesise paths.              |
+| `-collector.dhcp-log`    | `PIHOLE_EXPORTER_COLLECTOR_DHCP_LOG`      | Force the DHCP-log collector on/off, same "still needs the YAML path" rule.                                                                                          |
+
+Precedence (highest first): **CLI flag → env var → per-instance YAML → built-in default**. Empty/unset means "don't override" and the YAML's view stands.
+
 ## Running
 
 ### Container
