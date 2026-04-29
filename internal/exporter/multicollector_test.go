@@ -22,7 +22,7 @@ func TestAllCollectorsRegisterTogether(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	registry := prometheus.NewRegistry()
 
-	dns := newDNSCollector("primary", pihole.NewClient(pihole.Options{BaseURL: "http://127.0.0.1:1", Password: "x"}), logger)
+	dns := newDNSCollector("primary", pihole.NewClient(pihole.Options{BaseURL: "http://127.0.0.1:1", Password: "x"}), newDNSCounters(), logger)
 	leases := newDHCPLeasesCollector("primary", "/dev/null", logger)
 	logState := newDHCPLogState("primary", "/dev/null", logger)
 	dlog := newDHCPLogCollector("primary", logState)
